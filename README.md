@@ -62,6 +62,14 @@ Request only an Entra token. Values are typed at the prompt and the access token
 python get_token.py
 ```
 
+## Request id
+
+Send a GUID on every platform call as the `X-Request-Id` header. The platform stores that id and writes it on the logs for that call. If the header is missing or not a GUID, the platform generates one. GET calls use the same header. They do not need a body.
+
+The response always includes `X-Request-Id`. Keep that value. It is the id the platform actually used. When a call fails, report it so the call can be found in Application Insights.
+
+This is not `UPLOAD_REQUEST_ID`. That value identifies an upload job. `X-Request-Id` identifies one HTTP call. The Entra token request is not a platform call, so it does not use this header.
+
 ## Downloads
 
 Choices 4 and 5 ask for a document id and a file version. That version is a path segment on the download URL. It is separate from the `v1` in `/api/v1`, which is the API version. The JSON body has no version field.

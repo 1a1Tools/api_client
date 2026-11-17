@@ -10,6 +10,8 @@ The app token comes from Entra. Everything else is under /api/v1:
 - GET  /client/uploads                      files, status, and child document ids
 - GET  /client/documents/{id}/json/{1|2|3}
 - GET  /client/documents/{id}/geojson/{1|2|3}
+
+Every platform call sends its own X-Request-Id. The Entra token request does not.
 """
 
 from __future__ import annotations
@@ -26,13 +28,15 @@ from urllib.parse import quote, urlencode
 
 
 class OneA1Error(Exception):
-    def __init__(self, method: str, url: str, status: int, body: str) -> None:
+    def __init__(self, method: str, url: str, status: int, body: str, request_id: str | None = None) -> None:
         self.method = method
         self.url = url
         self.status = status
         self.body = body
+        self.request_id = request_id
         preview = body if len(body) <= 500 else body[:500] + "..."
-        super().__init__(f"{method} {url} -> {status}: {preview}")
+        request = f"  X-Request-Id: {request_id}" if request_id else ""
+        super().__init__(f"{method} {url} -> {status}: {preview}{request}")
 
 
 class OneA1Client:
@@ -48,6 +52,7 @@ class OneA1Client:
         self.client_secret: str | None = None
         self.tenant_id: str | None = None
         self.platform_tenant_id: str | None = None
+        self.last_request_id: str | None = None
 
     def get_token(
         self,
@@ -150,7 +155,13 @@ class OneA1Client:
             ok=(200,),
         )
         if not isinstance(listed, list):
-            raise OneA1Error("GET", self.base_url + "/api/v1/client/uploads", 200, "Expected a list of uploads.")
+            raise OneA1Error(
+                "GET",
+                self.base_url + "/api/v1/client/uploads",
+                200,
+                "Expected a list of uploads.",
+                self.last_request_id,
+            )
         return listed
 
     def download_json(self, document_id: str, version: int, destination: str | Path) -> Path:
@@ -215,7 +226,8 @@ class OneA1Client:
         ok: tuple[int, ...],
     ) -> Any:
         url = self.base_url + path
-        headers = {"Accept": "application/json"}
+        request_id = str(uuid.uuid4())
+        headers = {"Accept": "application/json", "X-Request-Id": request_id}
         if token:
             headers["Authorization"] = f"Bearer {token}"
         if self.platform_tenant_id and path.startswith("/api/v1/client/"):
@@ -224,14 +236,18 @@ class OneA1Client:
             headers["Content-Type"] = content_type
         request = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
-            return urllib.request.urlopen(request, timeout=self.timeout, context=self._ssl)
+            response = urllib.request.urlopen(request, timeout=self.timeout, context=self._ssl)
         except urllib.error.HTTPError as error:
+            self.last_request_id = _response_request_id(error.headers, request_id)
             detail = error.read().decode("utf-8", errors="replace")
             if error.code not in ok:
-                raise OneA1Error(method, url, error.code, detail) from None
+                raise OneA1Error(method, url, error.code, detail, self.last_request_id) from None
             return error
         except urllib.error.URLError as error:
-            raise OneA1Error(method, url, 0, str(error.reason)) from None
+            self.last_request_id = request_id
+            raise OneA1Error(method, url, 0, str(error.reason), request_id) from None
+        self.last_request_id = _response_request_id(response.headers, request_id)
+        return response
 
 
 def _multipart(boundary: str, paths: tuple[str | Path, ...]) -> bytes:
@@ -249,6 +265,16 @@ def _multipart(boundary: str, paths: tuple[str | Path, ...]) -> bytes:
         chunks.append(b"\r\n")
     chunks.append(f"--{boundary}--\r\n".encode("utf-8"))
     return b"".join(chunks)
+
+
+def _response_request_id(headers: Any, fallback: str) -> str:
+    if headers is None:
+        return fallback
+    value = headers.get("X-Request-Id")
+    if not value:
+        return fallback
+    value = str(value).strip()
+    return value or fallback
 
 
 def _filename(content_disposition: str | None) -> str | None:

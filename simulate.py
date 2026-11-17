@@ -104,6 +104,7 @@ def _run_all(session: Session) -> None:
     session.upload_request_id = str(uploaded["uploadRequestId"])
     print(f"upload request id: {session.upload_request_id}")
     print(f"status url: {uploaded.get('statusUrl')}")
+    _print_request_id(session.client)
     for item in uploaded.get("documents") or []:
         document_id = str(item.get("id") or "")
         print(f"document {document_id}  {item.get('name')}")
@@ -115,10 +116,14 @@ def _run_all(session: Session) -> None:
     if not session.document_ids:
         print("No document ids to download.")
         return
+    print("Downloading 1A1 JSON versions 1, 2, and 3")
     for document_id in list(session.document_ids):
         for version in VERSIONS:
-            _save(session.client.download_json, document_id, version, session.out / "json", "json")
-            _save(session.client.download_geojson, document_id, version, session.out / "geojson", "geojson")
+            _save(session.client, session.client.download_json, document_id, version, session.out / "json", "json")
+    print("Downloading GeoJSON versions 1, 2, and 3")
+    for document_id in list(session.document_ids):
+        for version in VERSIONS:
+            _save(session.client, session.client.download_geojson, document_id, version, session.out / "geojson", "geojson")
 
 
 def _require_platform_tenant(session: Session) -> None:
@@ -143,6 +148,7 @@ def _upload(session: Session) -> None:
     session.files = [str(path) for path in paths]
     print(f"upload request id: {session.upload_request_id}")
     print(f"status url: {uploaded.get('statusUrl')}")
+    _print_request_id(session.client)
     for item in uploaded.get("documents") or []:
         document_id = str(item.get("id") or "")
         print(f"document {document_id}  {item.get('name')}")
@@ -166,6 +172,7 @@ def _list_uploads(session: Session) -> None:
     _require_platform_tenant(session)
     files = session.client.uploads()
     print(f"{len(files)} file(s)")
+    _print_request_id(session.client)
     for item in files:
         children = item.get("children") or []
         child_ids = [str(child.get("documentId")) for child in children if child.get("documentId")]
@@ -200,26 +207,33 @@ def _download(session: Session, download, folder: Path, kind: str) -> None:
     session.document_ids = document_ids
     for document_id in document_ids:
         for version in versions:
-            _save(download, document_id, version, folder, kind)
+            _save(session.client, download, document_id, version, folder, kind)
 
 
 def _poll_status(client: OneA1Client, upload_request_id: str, wait_seconds: float) -> dict:
     deadline = time.monotonic() + wait_seconds
     while True:
         snapshot = client.status(upload_request_id)
+        _print_request_id(client)
         if snapshot.get("state") in {"completed", "failed"} or time.monotonic() >= deadline:
             return snapshot
         time.sleep(2)
 
 
-def _save(download, document_id: str, version: int, folder: Path, kind: str) -> None:
+def _save(client: OneA1Client, download, document_id: str, version: int, folder: Path, kind: str) -> None:
     label = f"{kind} v{version}  {document_id}"
     try:
         path = download(document_id, version, folder)
     except OneA1Error as error:
-        print(f"{label}  HTTP {error.status}: {_short(error.body)}")
+        request_id = error.request_id or client.last_request_id or ""
+        print(f"{label}  HTTP {error.status}: {_short(error.body)}  X-Request-Id: {request_id}")
         return
-    print(f"{label}  saved {path}")
+    print(f"{label}  saved {path}  X-Request-Id: {client.last_request_id}")
+
+
+def _print_request_id(client: OneA1Client) -> None:
+    if client.last_request_id:
+        print(f"X-Request-Id: {client.last_request_id}")
 
 
 def _load_env(path: Path) -> dict[str, str]:
